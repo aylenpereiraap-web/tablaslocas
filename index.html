@@ -509,7 +509,7 @@
         </select>
         <button class="btn3d gold" id="export-xlsx-btn">📊 Descargar Excel de esta sesión</button>
       </div>
-      <p class="note-text" style="margin:0;">Cada sesión agrupa los resultados por día de clase. Elige una sesión para ver solo esos estudiantes y descargarlos en un archivo Excel (con una hoja por curso).</p>
+      <p class="note-text" style="margin:0;">Cada sesión agrupa los resultados por día de clase. Elige una sesión para ver solo esos estudiantes y descargarlos en un archivo Excel (con una hoja por curso y un resumen de las tablas donde más se equivocan).</p>
     </div>
 
     <div class="results-table-wrap">
@@ -683,7 +683,12 @@ window.LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAFACAMAAAD6TlWYAAAAkFBMVEUAAA
   function buildQuiz(count, selectedTables){
     const pool = buildPool(selectedTables);
     const pairs = shuffle(pool).slice(0, Math.min(count, pool.length));
-    return pairs.map(([a,b], i) => buildQuestion(a, b, i % 2 === 0 ? 'mc' : 'input'));
+    return pairs.map(([a,b], i) => {
+      if(selectedTables && selectedTables.size > 0 && !selectedTables.has(a) && selectedTables.has(b)){
+        const t = a; a = b; b = t;
+      }
+      return buildQuestion(a, b, i % 2 === 0 ? 'mc' : 'input');
+    });
   }
 
   /* ---------------- STATE ---------------- */
@@ -701,6 +706,7 @@ window.LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAFACAMAAAD6TlWYAAAAkFBMVEUAAA
     selectedCount: null,
     selectedCourse: null,
     courseOther: false,
+    perTable: {},
     selectedTables: allTablesSet(),
     selectedTime: 30
   };
@@ -839,6 +845,7 @@ window.LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAFACAMAAAD6TlWYAAAAkFBMVEUAAA
     state.score = 0;
     state.correctCount = 0;
     state.streak = 0;
+    state.perTable = {};
 
     el('hdr-name').textContent = state.studentName;
     el('hdr-course').textContent = state.selectedCourse ? ('· ' + state.selectedCourse) : '';
@@ -992,6 +999,10 @@ window.LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAFACAMAAAD6TlWYAAAAkFBMVEUAAA
   }
 
   function finishQuestion(q, isCorrect, timedOut){
+    const tKey = String(q.a);
+    if(!state.perTable[tKey]) state.perTable[tKey] = [0, 0];
+    state.perTable[tKey][0]++;
+    if(isCorrect) state.perTable[tKey][1]++;
     let points = 0;
     if(isCorrect){
       Sound.correct();
@@ -1146,6 +1157,7 @@ window.LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAFACAMAAAD6TlWYAAAAkFBMVEUAAA
       total: total,
       score: state.score,
       percent: pct,
+      tables: JSON.parse(JSON.stringify(state.perTable)),
       date: new Date().toISOString()
     };
     addResult(result);
@@ -1244,6 +1256,31 @@ window.LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAFACAMAAAD6TlWYAAAAkFBMVEUAAA
   const OTHERS_SHEET = 'Otros';
   function sheetNameFor(course){
     return COURSE_ORDER.indexOf(course) >= 0 ? course : OTHERS_SHEET;
+  }
+
+  function computeTableStats(results){
+    const agg = {};
+    results.forEach(r => {
+      if(!r.tables) return;
+      Object.keys(r.tables).forEach(t => {
+        const v = r.tables[t];
+        if(!agg[t]) agg[t] = [0,0];
+        agg[t][0] += v[0]; agg[t][1] += v[1];
+      });
+    });
+    return Object.keys(agg).map(t => {
+      const asked = agg[t][0], ok = agg[t][1];
+      const pct = asked ? ok/asked : 0;
+      return {
+        'Tabla': 'Tabla del ' + t,
+        'Preguntas': asked,
+        'Correctas': ok,
+        'Incorrectas': asked - ok,
+        '% acierto': Math.round(pct*100) + '%',
+        'Nivel': pct < 0.6 ? 'Por reforzar' : (pct < 0.85 ? 'En progreso' : 'Dominada'),
+        _pct: pct
+      };
+    }).sort((a,b) => a._pct - b._pct).map(r => { delete r._pct; return r; });
   }
 
   /* ---------------- SESSIONS (agrupadas por día de clase) ---------------- */
@@ -1386,6 +1423,12 @@ window.LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAFACAMAAAD6TlWYAAAAkFBMVEUAAA
       ws['!cols'] = [{wch:22},{wch:14},{wch:11},{wch:8},{wch:12},{wch:10},{wch:18}];
       XLSX.utils.book_append_sheet(wb, ws, name);
     });
+    const tableStats = computeTableStats(filtered);
+    if(tableStats.length){
+      const wsT = XLSX.utils.json_to_sheet(tableStats);
+      wsT['!cols'] = [{wch:16},{wch:11},{wch:11},{wch:12},{wch:11},{wch:14}];
+      XLSX.utils.book_append_sheet(wb, wsT, 'Resumen por tabla');
+    }
     const fileLabel = sessionFilterKey === 'all' ? 'todas-las-sesiones' : sessionFilterKey.replace(/\//g,'-');
     XLSX.writeFile(wb, 'tablas-locas-' + fileLabel + '.xlsx');
   });
